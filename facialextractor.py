@@ -14,7 +14,32 @@ from mtcnn import MTCNN
 warnings.filterwarnings("ignore")
 
 class FacialExtractor:
+    """
+    A class for facial feature extraction, detection, and segmentation.
+
+    This class provides methods for detecting facial bounding boxes, cropping face images,
+    detecting facial landmarks, and segmenting face skin using the Segment Anything Model (SAM).
+
+    Attributes:
+        device (str): The device to use for computations ('cuda' or 'cpu').
+        detector: A dlib face detector object.
+        mp_face_mesh: MediaPipe FaceMesh solution.
+        face_mesh: MediaPipe FaceMesh model for facial landmark detection.
+
+    Methods:
+        detect_face_bbox(image): Detect face bounding box in an image.
+        crop_img(image, bbox, expandbbox): Crop and expand face image based on bounding box.
+        detect_lm(image): Detect facial landmarks using MediaPipe.
+        segment_face(image, interest_point): Segment face using SAM.
+        extract_face_skin(image, mask, resize): Extract face skin based on segmentation mask.
+    """
     def __init__(self, device='cuda'):
+        """
+        Initialize the FacialExtractor with specified device.
+
+        Args:
+            device (str): The device to use for computations. Default is 'cuda'.
+        """
         self.device = device
         
         # Set up face detector
@@ -25,6 +50,15 @@ class FacialExtractor:
         self.face_mesh = self.mp_face_mesh.FaceMesh(static_image_mode=True, max_num_faces=1, min_detection_confidence=0.5)
 
     def detect_face_bbox(self, image):
+        """
+        Detect face bounding box in the given image using dlib.
+
+        Args:
+            image (numpy.ndarray): Input image in RGB format.
+
+        Returns:
+            tuple: Bounding box coordinates (left, top, right, bottom) or None if no face detected.
+        """
         gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         faces = self.detector(gray, 1)
         if len(faces) > 0:
@@ -33,6 +67,18 @@ class FacialExtractor:
         return None
 
     def crop_img(self, image, bbox, expandbbox=1.6):
+        """
+        Crop and expand the face image based on the detected bounding box.
+
+        Args:
+            image (numpy.ndarray): Input image in RGB format.
+            bbox (tuple): Bounding box coordinates (left, top, right, bottom).
+            expandbbox (float): Factor to expand the bounding box. Default is 1.6.
+
+        Returns:
+            numpy.ndarray: Cropped and expanded face image.
+        """
+        
         # Ensure the image is in RGB format
         if len(image.shape) == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
@@ -64,6 +110,16 @@ class FacialExtractor:
         return face_image
     
     def detect_lm(self, image):
+        """
+        Detect facial landmarks using MediaPipe FaceMesh.
+
+        Args:
+            image (numpy.ndarray): Input face image in RGB format.
+
+        Returns:
+            list: List of tuples containing coordinates of interest points (forehead, right cheek, left cheek),
+                  or None if no face landmarks detected.
+        """
         
         results = self.face_mesh.process(image)
         if not results.multi_face_landmarks:
@@ -82,6 +138,20 @@ class FacialExtractor:
         return interest_point
         
     def segment_face(self, image, interest_point):
+        """
+        Segment the face using the Segment Anything Model (SAM).
+
+        Args:
+            image (numpy.ndarray): Input face image in RGB format.
+            interest_point (list): List of tuples containing coordinates of interest points.
+
+        Returns:
+            tuple: Contains three elements:
+                - masks (numpy.ndarray): Binary mask of the segmented face.
+                - score (float): Confidence score of the segmentation.
+                - logits (numpy.ndarray): Raw logits from the SAM model.
+        """
+
         # Initialize SAM model
         sam_checkpoint = "sam_vit_h_4b8939.pth"
         model_type = "vit_h"
@@ -103,6 +173,18 @@ class FacialExtractor:
         return masks, score, logits
     
     def extract_face_skin(self, image, mask, resize=224):
+        """
+        Extract the face skin based on the segmentation mask.
+
+        Args:
+            image (numpy.ndarray): Input face image in RGB format.
+            mask (numpy.ndarray): Binary mask of the segmented face.
+            resize (int): Size to resize the output image. Default is 224. Set to None for no resizing.
+
+        Returns:
+            numpy.ndarray: Extracted face skin image, optionally resized.
+        """
+
         # if the mask is 3 dimension, unsqueeze the first dimension
         if len(mask.shape) == 3:
             mask = mask[0]
