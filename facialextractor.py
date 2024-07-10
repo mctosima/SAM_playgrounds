@@ -222,6 +222,7 @@ class FacialExtractor:
         return face_skin
 
     def track_img_frames(self, path):
+        # TODO: Instead of reading path, try to accept 4D numpy array of images
         """
         Track the face movement in a series of image frames using KLT tracker.
 
@@ -374,7 +375,7 @@ class FacialExtractor:
             numpy.ndarray: 4D array of extracted face skin images (num_frames x height x width x channels)
         """
         # 1. Obtain the bounding boxes for each frame
-        bboxes = self.track_img_frames(path)
+        bboxes = self.track_img_frames(path) # TODO: Read first then track
 
         # Get list of image files
         img_files = sorted(glob(os.path.join(path, "*.*")))
@@ -388,24 +389,37 @@ class FacialExtractor:
                 print(f"Processing frame {i} from {len(img_files)} frames...")
             
             # Read the image
+            # TODO: No Need to re-read
+            time_start = time.time()
             image = cv2.imread(img_path)
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+            print(f"Time to read image: {time.time() - time_start:.4f} seconds")
 
             # 2. Crop the face from each frame using `crop_img`
+            time_start = time.time()
             face_image = self.crop_img(image, bbox)
+            print(f"Time to crop image: {time.time() - time_start:.4f} seconds")
 
             # 3. Detect facial landmarks for every frame using `detect_lm`
+            # TODO: Detect LM every 0.5 seconds
+            time_start = time.time()
             landmarks = self.detect_lm(face_image)
+            print(f"Time to detect landmarks: {time.time() - time_start:.4f} seconds")
 
             if landmarks is None:
                 print(f"Warning: No landmarks detected for frame {i}. Skipping this frame.")
                 continue
 
             # 4. Segment every frame the face using `segment_face`
+            # TODO: Segment face every 1 second. Hold the mask to reuse
+            time_start = time.time()
             masks, _, _ = self.segment_face(face_image, landmarks)
+            print(f"Time to segment face: {time.time() - time_start:.4f} seconds")
 
             # 5. Extract the face skin from each frame using `extract_face_skin`
+            time_start = time.time()
             face_skin = self.extract_face_skin(face_image, masks)
+            print(f"Time to extract face skin: {time.time() - time_start:.4f} seconds")
 
             extracted_faces.append(face_skin)
 
