@@ -42,8 +42,6 @@ class FacialExtractor:
     def __init__(
         self,
         device="cuda",
-        expandbbox=1.6,
-        out_size=224,
     ):
         """
         Initialize the FacialExtractor with specified device.
@@ -52,8 +50,6 @@ class FacialExtractor:
             device (str): The device to use for computations. Default is 'cuda'.
         """
         self.device = device
-        self.expandbbox = expandbbox
-        self.out_size = out_size
 
         # Set up face detector
         self.detector = dlib.get_frontal_face_detector()
@@ -88,7 +84,7 @@ class FacialExtractor:
             return (face.left(), face.top(), face.right(), face.bottom())
         return None
 
-    def crop_img(self, image, bbox):
+    def crop_img(self, image, bbox, expandbbox, out_size):
         """
         Crop and expand the face image based on the detected bounding box.
 
@@ -117,7 +113,7 @@ class FacialExtractor:
         center_y = int(center_y - 0.2 * size)
 
         # Expand the bounding box size
-        size = int(size * self.expandbbox)
+        size = int(size * expandbbox)
 
         # Ensure the expanded box stays within the image bounds
         new_x1 = max(0, center_x - size // 2)
@@ -129,7 +125,7 @@ class FacialExtractor:
         face_image = image[new_y1:new_y2, new_x1:new_x2]
         
         # resize the image
-        face_image = cv2.resize(face_image, (self.out_size, self.out_size))
+        face_image = cv2.resize(face_image, (out_size, out_size))
         return face_image
 
     def detect_lm(self, image):
@@ -221,60 +217,62 @@ class FacialExtractor:
 
         return face_skin
 
-    def track_img_frames(self, path):
-        # TODO: Instead of reading path, try to accept 4D numpy array of images
+    def track_img_frames(self, images, use_klt=True, dlib_interval=1, winSize=(15,15), maxLevel=2, 
+                     minDistance=5, maxCorners=150, smoothing_window=0):
         """
-        Track the face movement in a series of image frames using KLT tracker.
+        Track the face movement in a series of image frames using KLT tracker or dlib.
 
         Args:
-            path (str): Path to the directory containing image frames.
+            images (numpy.ndarray): 4D numpy array of images (num_frames x height x width x channels)
+            use_klt (bool): Whether to use KLT tracking. If False, use dlib for face detection.
+            dlib_interval (int): Interval for face detection when not using KLT. 
+            winSize (tuple): Size of the search window at each pyramid level for KLT.
+            maxLevel (int): 0-based maximal pyramid level number for KLT.
+            minDistance (int): Minimum possible Euclidean distance between the returned corners for goodFeaturesToTrack.
+            maxCorners (int): Maximum number of corners to return for goodFeaturesToTrack.
+            smoothing_window (int): Size of the moving average window for smoothing. If 0, no smoothing is applied.
 
         Returns:
             list: List of bounding boxes for each frame.
         """
-        if not os.path.isdir(path):
-            raise ValueError("The path is not a directory.")
-
-        img_files = sorted(glob(os.path.join(path, "*.*")))
-        img_files = [f for f in img_files if f.endswith(("jpg", "jpeg", "png"))]
-        if len(img_files) == 0:
-            raise ValueError("No image files found in the directory.")
+        if not isinstance(images, np.ndarray) or images.ndim != 4:
+            raise ValueError("Input must be a 4D numpy array of images.")
 
         bboxes = []
         old_gray = None
         p0 = None
-        lk_params = dict(winSize=(15,15), maxLevel=2,
+        lk_params = dict(winSize=winSize, maxLevel=maxLevel,
                         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 10, 0.03))
 
         initial_bbox = None
         bbox_size = None
 
-        for i, img_path in enumerate(img_files):
-            image_bgr = cv2.imread(img_path)
-            image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
+        for i in range(images.shape[0]):
+            image_rgb = images[i]
             image_gray = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2GRAY)
 
-            if i == 0:
-                # For the first frame, use dlib to detect the face
+            if i == 0 or (not use_klt and i % dlib_interval == 0):
+                # Use dlib to detect the face
                 bbox = self.detect_face_bbox(image_rgb)
                 if bbox is None:
-                    raise ValueError("No face detected in the first frame.")
+                    if i == 0:
+                        raise ValueError("No face detected in the first frame.")
+                    else:
+                        # If face detection fails, use the last known bbox
+                        bbox = bboxes[-1]
                 
                 initial_bbox = bbox
                 x, y, w, h = bbox[0], bbox[1], bbox[2]-bbox[0], bbox[3]-bbox[1]
                 bbox_size = (w, h)
                 
-                mask = np.zeros_like(image_gray)
-                mask[y:y+h, x:x+w] = 255
-
-                # Set tracking points
-                p0 = cv2.goodFeaturesToTrack(image_gray, mask=mask, maxCorners=100, 
-                                            qualityLevel=0.3, minDistance=7, blockSize=7)
+                if use_klt:
+                    mask = np.zeros_like(image_gray)
+                    mask[y:y+h, x:x+w] = 255
+                    p0 = cv2.goodFeaturesToTrack(image_gray, mask=mask, maxCorners=maxCorners, 
+                                                qualityLevel=0.01, minDistance=minDistance)
                 
                 old_gray = image_gray.copy()
-                bboxes.append(bbox)
-            else:
-                # For subsequent frames, use KLT tracking
+            elif use_klt:
                 if p0 is None or len(p0) < 4:  # We need at least 4 points for a bounding box
                     # If we lost too many points, re-detect the face
                     bbox = self.detect_face_bbox(image_rgb)
@@ -284,8 +282,8 @@ class FacialExtractor:
                     x, y, w, h = bbox[0], bbox[1], bbox[2]-bbox[0], bbox[3]-bbox[1]
                     mask = np.zeros_like(image_gray)
                     mask[y:y+h, x:x+w] = 255
-                    p0 = cv2.goodFeaturesToTrack(image_gray, mask=mask, maxCorners=100, 
-                                                qualityLevel=0.3, minDistance=7, blockSize=7)
+                    p0 = cv2.goodFeaturesToTrack(image_gray, mask=mask, maxCorners=maxCorners, 
+                                                qualityLevel=0.01, minDistance=minDistance)
                 else:
                     # Calculate optical flow
                     p1, st, err = cv2.calcOpticalFlowPyrLK(old_gray, image_gray, p0, None, **lk_params)
@@ -312,7 +310,17 @@ class FacialExtractor:
                     p0 = good_new.reshape(-1, 1, 2)
 
                 old_gray = image_gray.copy()
-                bboxes.append(bbox)
+            else:
+                # If not using KLT and not on a dlib interval frame, use the last known bbox
+                bbox = bboxes[-1]
+
+            # Apply smoothing if window size is greater than 0
+            if smoothing_window > 0:
+                start = max(0, i - smoothing_window + 1)
+                window = bboxes[start:] + [bbox]
+                bbox = tuple(map(lambda x: int(sum(x) / len(x)), zip(*window)))
+
+            bboxes.append(bbox)
 
         return bboxes
     
@@ -364,64 +372,117 @@ class FacialExtractor:
         plt.tight_layout()
         plt.show()
         
-    def process_img_frames(self, path):
+    def process_img_frames(self, image_path, use_klt=True, dlib_interval=1, landmark_interval=0.5, 
+                       segment_interval=1.0, fps=30, expandbbox=2.0, out_size=224, verbose=False,
+                       winSize=(15,15), maxLevel=2, minDistance=5, maxCorners=150, smoothing_window=0):
         """
         Process a series of image frames to extract face skin.
 
         Args:
-            path (str): Path to the directory containing image frames.
+            image_path (str): Path to the directory containing image frames.
+            use_klt (bool): Whether to use KLT tracking. If False, use dlib for face detection.
+            dlib_interval (int): Interval for face detection when not using KLT.
+            landmark_interval (float): Interval in seconds to detect facial landmarks.
+            segment_interval (float): Interval in seconds to perform face segmentation.
+            fps (int): Frames per second of the input video.
+            expandbbox (float): Factor to expand the bounding box.
+            out_size (int): Size of the output face image.
+            verbose (bool): Whether to print progress information.
+            winSize (tuple): Size of the search window at each pyramid level for KLT.
+            maxLevel (int): 0-based maximal pyramid level number for KLT.
+            minDistance (int): Minimum possible Euclidean distance between the returned corners for goodFeaturesToTrack.
+            maxCorners (int): Maximum number of corners to return for goodFeaturesToTrack.
+            smoothing_window (int): Size of the moving average window for smoothing bounding boxes. If 0, no smoothing is applied.
 
         Returns:
             numpy.ndarray: 4D array of extracted face skin images (num_frames x height x width x channels)
         """
-        # 1. Obtain the bounding boxes for each frame
-        bboxes = self.track_img_frames(path) # TODO: Read first then track
-
-        # Get list of image files
-        img_files = sorted(glob(os.path.join(path, "*.*")))
+        # 0. Read the images
+        if verbose:
+            print(f"Reading images from {image_path}...")
+            time_start = time.time()
+        img_files = sorted(glob(os.path.join(image_path, '*.*')))
         img_files = [f for f in img_files if f.endswith(("jpg", "jpeg", "png"))]
+        
+        if verbose:
+            print(f"Found {len(img_files)} image files.")
+            print(f"Time taken: {time.time() - time_start:.2f} seconds")
+        
+        images = []
+        for img_file in img_files:
+            img = cv2.imread(img_file)
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            images.append(img)
+            
+        # convert the list into numpy array
+        images = np.array(images)
+        
+        # 1. Obtain the bounding boxes for each frame
+        if verbose:
+            print("Tracking face movement in the image frames...")
+            time_start = time.time()
+        bboxes = self.track_img_frames(images, use_klt=use_klt, dlib_interval=dlib_interval,
+                                    winSize=winSize, maxLevel=maxLevel, minDistance=minDistance,
+                                    maxCorners=maxCorners, smoothing_window=smoothing_window)
+        
+        if verbose:
+            print(f"Time taken: {time.time() - time_start:.2f} seconds")
 
         extracted_faces = []
+        last_landmark_frame = -1
+        last_segment_frame = -1
+        last_landmarks = None
+        last_mask = None
 
-        for i, (img_path, bbox) in enumerate(zip(img_files, bboxes)):
+        landmark_frame_interval = int(landmark_interval * fps)
+        segment_frame_interval = int(segment_interval * fps)
+
+        for i, (image, bbox) in enumerate(zip(images, bboxes)):
             # display progress
-            if i % 20 == 0:
-                print(f"Processing frame {i} from {len(img_files)} frames...")
-            
-            # Read the image
-            # TODO: No Need to re-read
-            time_start = time.time()
-            image = cv2.imread(img_path)
-            image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            print(f"Time to read image: {time.time() - time_start:.4f} seconds")
 
             # 2. Crop the face from each frame using `crop_img`
             time_start = time.time()
-            face_image = self.crop_img(image, bbox)
-            print(f"Time to crop image: {time.time() - time_start:.4f} seconds")
+            face_image = self.crop_img(image, bbox, expandbbox, out_size)
+            time_crop = time.time() - time_start
 
-            # 3. Detect facial landmarks for every frame using `detect_lm`
-            # TODO: Detect LM every 0.5 seconds
-            time_start = time.time()
-            landmarks = self.detect_lm(face_image)
-            print(f"Time to detect landmarks: {time.time() - time_start:.4f} seconds")
+            # 3. Detect facial landmarks every `landmark_interval` seconds
+            if i - last_landmark_frame >= landmark_frame_interval or last_landmarks is None:
+                time_start = time.time()
+                landmarks = self.detect_lm(face_image)
+                last_landmark_frame = i
+                last_landmarks = landmarks
+                time_landmark = time.time() - time_start
+            else:
+                landmarks = last_landmarks
+                time_landmark = 0
 
             if landmarks is None:
                 print(f"Warning: No landmarks detected for frame {i}. Skipping this frame.")
                 continue
 
-            # 4. Segment every frame the face using `segment_face`
-            # TODO: Segment face every 1 second. Hold the mask to reuse
-            time_start = time.time()
-            masks, _, _ = self.segment_face(face_image, landmarks)
-            print(f"Time to segment face: {time.time() - time_start:.4f} seconds")
+            # 4. Segment the face every `segment_interval` seconds
+            if i - last_segment_frame >= segment_frame_interval or last_mask is None:
+                time_start = time.time()
+                masks, _, _ = self.segment_face(face_image, landmarks)
+                last_segment_frame = i
+                last_mask = masks
+                time_segment = time.time() - time_start
+            else:
+                masks = last_mask
+                time_segment = 0
 
             # 5. Extract the face skin from each frame using `extract_face_skin`
             time_start = time.time()
             face_skin = self.extract_face_skin(face_image, masks)
-            print(f"Time to extract face skin: {time.time() - time_start:.4f} seconds")
 
             extracted_faces.append(face_skin)
+            time_extract = time.time() - time_start
+            
+            
+            # Verbose
+            if i % 173 == 0 and verbose:
+                # in milisecond
+                print(f"Frame {i} / {len(images)}| Crop: {time_crop*1000:.2f} ms | Landmark: {time_landmark*1000:.2f} ms | Segment: {time_segment*1000:.2f} ms | Extract: {time_extract*1000:.2f} ms")
 
         # 6. Return the extracted face skin images
         return np.array(extracted_faces)
