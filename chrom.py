@@ -1,5 +1,6 @@
 import numpy as np
-from scipy.signal import butter, filtfilt, welch, firwin, lfilter
+from scipy.signal import butter, filtfilt, welch, firwin, lfilter, spectrogram
+import matplotlib.pyplot as plt
 
 def chrom_rppg(rgb_signal, fs, cutoff_freq=[0.5, 2.5]):
     """
@@ -41,13 +42,14 @@ def chrom_rppg(rgb_signal, fs, cutoff_freq=[0.5, 2.5]):
     
     return S_filtered
 
-def select_most_informative_signal(rppg_signals, fs=30):
+def select_most_informative_signal(rppg_signals, fs=30, visualize=False):
     '''
     Select the most informative rPPG signal based on Welch's method for PSD computation.
     
     Input:
         - rppg_signals: numpy.ndarray, shape (3, temporal), three rPPG signals to choose from.
         - fs: int, the sampling frequency (default: 30Hz).
+        - visualize: bool, if True, plots the PSD and spectrogram of the signals.
     
     Output:
         - best_signal_index: int, the index of the most informative signal (0, 1, or 2).
@@ -59,6 +61,7 @@ def select_most_informative_signal(rppg_signals, fs=30):
     # Initialize variables to track the best signal
     best_signal_index = None
     max_peak_power = -np.inf
+    peak_powers = []  # To store peak powers for visualization
     
     # Iterate over each signal to compute its PSD and find the most informative one
     for i in range(rppg_signals.shape[0]):
@@ -71,13 +74,48 @@ def select_most_informative_signal(rppg_signals, fs=30):
         
         # Find the peak power in the physiological range
         peak_power = np.max(psd_in_range)
+        peak_powers.append(peak_power)
         
         # Check if this signal has the highest peak power
         if peak_power > max_peak_power:
             max_peak_power = peak_power
             best_signal_index = i
     
+    # Visualization of the PSD and spectrogram
+    if visualize:
+        fig, axes = plt.subplots(2, 3, figsize=(15, 8))
+        
+        for i in range(rppg_signals.shape[0]):
+            # Plot the PSD
+            freqs, psd = welch(rppg_signals[i], fs=fs, nperseg=fs*4)
+            axes[0, i].plot(freqs, psd, label=f'Signal {i + 1}')
+            axes[0, i].axvline(x=freqs[np.argmax(psd)], color='r', linestyle='--', alpha=0.6)
+            axes[0, i].text(freqs[np.argmax(psd)], np.max(psd), f'Peak: {peak_powers[i]:.2f}', 
+                            verticalalignment='bottom', horizontalalignment='left')
+            axes[0, i].set_xlim(freq_range)
+            axes[0, i].set_title(f'PSD of Signal {i + 1}')
+            axes[0, i].set_xlabel('Frequency (Hz)')
+            axes[0, i].set_ylabel('Power Spectral Density')
+            axes[0, i].grid(True)
+            axes[0, i].legend()
+            
+            # Plot the Spectrogram
+            f, t, Sxx = spectrogram(rppg_signals[i], fs=fs, nperseg=fs*4, noverlap=fs*2, window='hamming')
+            im = axes[1, i].pcolormesh(t, f, 10 * np.log10(Sxx), shading='gouraud')
+            axes[1, i].set_ylim(freq_range)
+            axes[1, i].set_title(f'Spectrogram of Signal {i + 1}')
+            axes[1, i].set_xlabel('Time (s)')
+            axes[1, i].set_ylabel('Frequency (Hz)')
+            fig.colorbar(im, ax=axes[1, i], format='%+2.0f dB')
+        
+        plt.tight_layout()
+        plt.savefig('./out/compare_signal.png')
+        plt.show()
+        
+    
     return best_signal_index
+
+
 
 def bandpass_filter(data, fs=30, lowcut=0.6, highcut=2.0, numtaps=101):
     '''
